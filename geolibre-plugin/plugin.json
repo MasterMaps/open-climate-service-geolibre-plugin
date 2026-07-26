@@ -1,0 +1,8 @@
+{
+  "id": "open-climate-service",
+  "name": "Open Climate Service",
+  "version": "0.1.0",
+  "entry": "dist/index.js",
+  "style": "dist/style.css",
+  "description": "Browse an Open Climate Service STAC catalog and render its published GeoZarr datasets, with CRS, time, and variable taken from STAC."
+}

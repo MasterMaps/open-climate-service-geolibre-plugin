@@ -1,0 +1,5 @@
+node_modules/
+geolibre-plugin/dist/
+geolibre-plugin/*.zip
+*.tsbuildinfo
+.DS_Store
