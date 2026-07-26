@@ -1,10 +1,14 @@
+/* Theme-agnostic: inherit the host panel's text colour (GeoLibre may be light or
+   dark) and express hierarchy with opacity + neutral-grey tints rather than
+   hardcoded colours, so the panel is legible on either theme. */
+
 .ocs-panel {
   display: flex;
   flex-direction: column;
   gap: 12px;
   padding: 12px;
   font: 13px/1.4 system-ui, sans-serif;
-  color: #1f2937;
+  color: inherit;
 }
 
 .ocs-row {
@@ -29,9 +33,16 @@
 .ocs-input,
 .ocs-select {
   padding: 6px 8px;
-  border: 1px solid #d1d5db;
+  border: 1px solid rgba(127, 127, 127, 0.45);
   border-radius: 6px;
+  background: rgba(127, 127, 127, 0.12);
+  color: inherit;
   font: inherit;
+}
+
+.ocs-input::placeholder {
+  color: inherit;
+  opacity: 0.5;
 }
 
 .ocs-btn {
@@ -52,11 +63,12 @@
 .ocs-status {
   min-height: 16px;
   font-size: 12px;
-  color: #6b7280;
+  opacity: 0.7;
 }
 
 .ocs-status.ocs-error {
-  color: #b91c1c;
+  color: #f87171;
+  opacity: 1;
 }
 
 .ocs-meta {
@@ -72,7 +84,7 @@
 }
 
 .ocs-meta-label {
-  color: #6b7280;
+  opacity: 0.6;
 }
 
 .ocs-meta-value {
@@ -94,20 +106,20 @@
 
 .ocs-dim-value {
   font-variant-numeric: tabular-nums;
-  color: #374151;
+  opacity: 0.85;
 }
 
 .ocs-legend-bar {
   height: 12px;
   border-radius: 3px;
-  border: 1px solid #d1d5db;
+  border: 1px solid rgba(127, 127, 127, 0.4);
 }
 
 .ocs-legend-scale {
   display: flex;
   justify-content: space-between;
   font-size: 11px;
-  color: #6b7280;
+  opacity: 0.7;
   margin-top: 2px;
 }
 
