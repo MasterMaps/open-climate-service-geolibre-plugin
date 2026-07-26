@@ -111,8 +111,20 @@ function renderLayer(spec: RenderSpec, bbox: [number, number, number, number] | 
   app.registerExternalNativeLayer?.({
     id: LAYER_ID,
     name: `OCS: ${spec.datasetId}`,
+    // Declare a plugin-painted raster: `type: "raster"` keeps GeoLibre from showing its
+    // vector fill/stroke editor, and `controlOwnsPaint` tells it this plugin owns the
+    // rendering (colours come from the zarr-layer colormap, not MapLibre paint).
+    type: "raster",
     nativeLayerIds: [LAYER_ID],
-    metadata: { datasetId: spec.datasetId, source: spec.source, ocsUrl: state.ocsUrl },
+    opacity: 1,
+    metadata: {
+      datasetId: spec.datasetId,
+      source: spec.source,
+      ocsUrl: state.ocsUrl,
+      pluginId: PLUGIN_ID,
+      externalNativeLayer: true,
+      controlOwnsPaint: true,
+    },
   });
   state.layer = layer;
 
