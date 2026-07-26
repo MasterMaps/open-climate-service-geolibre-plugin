@@ -18,6 +18,7 @@ interface PluginState {
   spec: RenderSpec | null;
   selector: Record<string, number>;
   layer: ZarrLayer | null;
+  style: { colormapName: string; clim: [number, number]; opacity: number };
 }
 
 const state: PluginState = {
@@ -27,7 +28,27 @@ const state: PluginState = {
   spec: null,
   selector: {},
   layer: null,
+  style: { colormapName: "viridis", clim: [0, 100], opacity: 1 },
 };
+
+// Curated colormaps offered in the panel (chroma/ColorBrewer names); the dataset's
+// own default is prepended when it isn't already in the list.
+const COLORMAP_NAMES = [
+  "viridis",
+  "turbo",
+  "magma",
+  "plasma",
+  "inferno",
+  "cividis",
+  "RdBu_r",
+  "RdYlBu_r",
+  "Spectral_r",
+  "Blues",
+  "Reds",
+  "Greens",
+  "YlGnBu",
+  "YlOrRd",
+];
 
 // --- tiny DOM helpers -------------------------------------------------------
 
@@ -52,6 +73,7 @@ interface PanelRefs {
   meta: HTMLElement;
   dims: HTMLElement;
   legend: HTMLElement;
+  styleControls: HTMLElement;
 }
 let panel: PanelRefs | null = null;
 
@@ -140,10 +162,12 @@ async function loadDataset(datasetId: string): Promise<void> {
     const bbox = collection.extent?.spatial?.bbox?.[0] ?? null;
     state.datasetId = datasetId;
     state.spec = spec;
+    state.style = { colormapName: spec.colormapName, clim: spec.clim, opacity: 1 };
     renderLayer(spec, bbox);
     renderMeta(spec);
     renderDimControls(spec);
     renderLegend(spec);
+    renderStyleControls(spec);
     setStatus("");
   } catch (err) {
     setStatus(`Failed to load ${datasetId}: ${(err as Error).message}`, true);
@@ -261,15 +285,89 @@ function renderDimControls(spec: RenderSpec): void {
 function renderLegend(spec: RenderSpec): void {
   if (!panel) return;
   panel.legend.replaceChildren();
-  const colors = buildColormap(spec.colormapName);
+  const colors = buildColormap(state.style.colormapName);
   const bar = el("div", "ocs-legend-bar");
   bar.style.background = `linear-gradient(to right, ${colors.join(",")})`;
   const scale = el("div", "ocs-legend-scale");
-  scale.appendChild(el("span", undefined, String(spec.clim[0])));
+  scale.appendChild(el("span", undefined, String(state.style.clim[0])));
   scale.appendChild(el("span", undefined, spec.units || ""));
-  scale.appendChild(el("span", undefined, String(spec.clim[1])));
+  scale.appendChild(el("span", undefined, String(state.style.clim[1])));
   panel.legend.appendChild(bar);
   panel.legend.appendChild(scale);
+}
+
+// Interactive raster styling — owned here (our panel), driving zarr-layer's real
+// methods, because GeoLibre's right-panel raster paint doesn't reach a custom layer.
+function renderStyleControls(spec: RenderSpec): void {
+  if (!panel) return;
+  const host = panel.styleControls;
+  host.replaceChildren();
+
+  // Opacity slider → layer.setOpacity
+  const opBlock = el("div", "ocs-dim");
+  const opHeader = el("div", "ocs-dim-header");
+  opHeader.appendChild(el("span", "ocs-dim-label", "Opacity"));
+  const opValue = el("span", "ocs-dim-value", state.style.opacity.toFixed(2));
+  opHeader.appendChild(opValue);
+  opBlock.appendChild(opHeader);
+  const opSlider = el("input", "ocs-slider");
+  opSlider.type = "range";
+  opSlider.min = "0";
+  opSlider.max = "1";
+  opSlider.step = "0.05";
+  opSlider.value = String(state.style.opacity);
+  opSlider.addEventListener("input", () => {
+    const v = Number(opSlider.value);
+    state.style.opacity = v;
+    opValue.textContent = v.toFixed(2);
+    state.layer?.setOpacity(v);
+  });
+  opBlock.appendChild(opSlider);
+  host.appendChild(opBlock);
+
+  // Colormap dropdown → layer.setColormap
+  const cmRow = el("div", "ocs-row");
+  cmRow.appendChild(el("label", "ocs-field-label", "Colormap"));
+  const cmSelect = el("select", "ocs-select");
+  for (const name of [state.style.colormapName, ...COLORMAP_NAMES.filter((n) => n !== state.style.colormapName)]) {
+    const opt = el("option", undefined, name);
+    opt.value = name;
+    cmSelect.appendChild(opt);
+  }
+  cmSelect.value = state.style.colormapName;
+  cmSelect.addEventListener("change", () => {
+    state.style.colormapName = cmSelect.value;
+    state.layer?.setColormap(buildColormap(cmSelect.value));
+    renderLegend(spec);
+  });
+  cmRow.appendChild(cmSelect);
+  host.appendChild(cmRow);
+
+  // Min / max rescale → layer.setClim
+  const climRow = el("div", "ocs-row");
+  climRow.appendChild(el("label", "ocs-field-label", "Range (min / max)"));
+  const climInputs = el("div", "ocs-clim");
+  const minInput = el("input", "ocs-input");
+  minInput.type = "number";
+  minInput.value = String(state.style.clim[0]);
+  const maxInput = el("input", "ocs-input");
+  maxInput.type = "number";
+  maxInput.value = String(state.style.clim[1]);
+  const applyClim = () => {
+    const mn = Number(minInput.value);
+    const mx = Number(maxInput.value);
+    if (Number.isFinite(mn) && Number.isFinite(mx) && mn < mx) {
+      state.style.clim = [mn, mx];
+      state.layer?.setClim([mn, mx]);
+      renderLegend(spec);
+    }
+  };
+  minInput.addEventListener("change", applyClim);
+  maxInput.addEventListener("change", applyClim);
+  climInputs.appendChild(minInput);
+  climInputs.appendChild(maxInput);
+  climRow.appendChild(climInputs);
+  host.appendChild(climRow);
 }
 
 // --- panel shell ------------------------------------------------------------
@@ -301,12 +399,14 @@ function renderPanel(container: HTMLElement): () => void {
   const meta = el("div", "ocs-meta");
   const dims = el("div", "ocs-dims ocs-hidden");
   const legend = el("div", "ocs-legend");
+  const styleControls = el("div", "ocs-style");
   root.appendChild(meta);
   root.appendChild(dims);
   root.appendChild(legend);
+  root.appendChild(styleControls);
 
   container.appendChild(root);
-  panel = { status, collectionSelect, meta, dims, legend };
+  panel = { status, collectionSelect, meta, dims, legend, styleControls };
 
   // Restore state if the panel is reopened after being built once.
   if (state.collections.length) renderCollectionOptions();
@@ -314,6 +414,7 @@ function renderPanel(container: HTMLElement): () => void {
     renderMeta(state.spec);
     renderDimControls(state.spec);
     renderLegend(state.spec);
+    renderStyleControls(state.spec);
   }
 
   return () => {

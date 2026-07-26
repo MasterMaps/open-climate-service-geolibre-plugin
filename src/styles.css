@@ -123,6 +123,21 @@
   margin-top: 2px;
 }
 
+.ocs-style {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ocs-clim {
+  display: flex;
+  gap: 8px;
+}
+
+.ocs-clim .ocs-input {
+  width: 50%;
+}
+
 .ocs-hidden {
   display: none;
 }
