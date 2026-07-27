@@ -183,6 +183,13 @@ async function renderLayer(spec: RenderSpec, bbox: [number, number, number, numb
   state.selector = {};
   for (const d of spec.dims) state.selector[d.key] = d.index;
 
+  // Diagnostic: which path + is the native API present on the app object we were given?
+  console.info(
+    `[OCS] render path: ${app.addZarrLayer ? "NATIVE addZarrLayer" : "FALLBACK registerExternalNativeLayer"}`,
+    `| typeof addZarrLayer: ${typeof app.addZarrLayer}`,
+    `| app keys: ${Object.keys(app).join(", ")}`,
+  );
+
   if (app.addZarrLayer) {
     // Native path (GeoLibre >= #1447): render through the host's own zarr-layer — no
     // bundled second copy, native Layers/Style-panel integration, CRS from proj4.
@@ -507,7 +514,7 @@ let unregisterPanel: (() => void) | undefined;
 export const plugin: GeoLibrePlugin = {
   id: PLUGIN_ID,
   name: "Open Climate Service",
-  version: "0.1.0",
+  version: "0.1.1",
   urlParameterNames: [OCS_URL_PARAM, DATASET_PARAM],
 
   activate(app) {
