@@ -2,7 +2,7 @@ import "./styles.css";
 import { ZarrLayer } from "@carbonplan/zarr-layer";
 import { buildColormap } from "./colormap";
 import { buildRenderSpec, fetchCatalog, fetchCollection, type DimState, type OcsCollectionSummary, type RenderSpec } from "./ocs";
-import type { GeoLibreAppAPI, GeoLibrePlugin } from "./types/geolibre";
+import type { GeoLibreAppAPI, GeoLibrePlugin, GeoLibreZarrLayerOptions } from "./types/geolibre";
 
 const PLUGIN_ID = "open-climate-service";
 const PANEL_ID = "ocs-panel";
@@ -17,7 +17,9 @@ interface PluginState {
   datasetId: string | null;
   spec: RenderSpec | null;
   selector: Record<string, number>;
-  layer: ZarrLayer | null;
+  layer: ZarrLayer | null; // fallback path: our bundled zarr-layer instance
+  nativeLayerId: string | null; // native path: id returned by app.addZarrLayer
+  native: boolean; // true when rendering via GeoLibre's native addZarrLayer
   style: { colormapName: string; clim: [number, number]; opacity: number };
 }
 
@@ -28,6 +30,8 @@ const state: PluginState = {
   spec: null,
   selector: {},
   layer: null,
+  nativeLayerId: null,
+  native: false,
   style: { colormapName: "viridis", clim: [0, 100], opacity: 1 },
 };
 
@@ -85,9 +89,37 @@ function setStatus(msg: string, isError = false): void {
 
 // --- rendering --------------------------------------------------------------
 
+function nativeName(spec: RenderSpec): string {
+  return `OCS: ${spec.datasetId}`;
+}
+
+/** Map our render spec + live style into GeoLibre's native addZarrLayer options. */
+function buildZarrOptions(spec: RenderSpec): GeoLibreZarrLayerOptions {
+  const zarrVersion = spec.zarrVersion === 2 || spec.zarrVersion === 3 ? spec.zarrVersion : undefined;
+  return {
+    variable: spec.variable,
+    selector: { ...state.selector },
+    clim: state.style.clim,
+    colormap: buildColormap(state.style.colormapName),
+    opacity: state.style.opacity,
+    ...(zarrVersion != null ? { zarrVersion } : {}),
+    ...(spec.crs ? { crs: spec.crs } : {}),
+    ...(spec.proj4 != null ? { proj4: spec.proj4 } : {}),
+  };
+}
+
 function removeLayer(): void {
   const map = state.app?.getMap?.();
-  if (state.layer && map) {
+  if (state.native && state.nativeLayerId) {
+    if (map) {
+      try {
+        map.removeLayer(state.nativeLayerId);
+      } catch {
+        /* already gone */
+      }
+    }
+    state.app?.unregisterExternalNativeLayer?.(state.nativeLayerId);
+  } else if (state.layer && map) {
     try {
       map.removeLayer(LAYER_ID);
     } catch {
@@ -96,13 +128,50 @@ function removeLayer(): void {
     state.app?.unregisterExternalNativeLayer?.(LAYER_ID);
   }
   state.layer = null;
+  state.nativeLayerId = null;
 }
 
 function applySelector(): void {
-  state.layer?.setSelector({ ...state.selector });
+  if (state.native && state.nativeLayerId) {
+    // In-place re-select on the host's layer (no rebuild) — GeoLibre #1447.
+    void state.app?.setZarrLayerSelector?.(state.nativeLayerId, { ...state.selector });
+  } else {
+    state.layer?.setSelector({ ...state.selector });
+  }
 }
 
-function renderLayer(spec: RenderSpec, bbox: [number, number, number, number] | null): void {
+let _styleDebounce: number | undefined;
+
+/** Apply live colormap/clim/opacity. Fallback layer has in-place setters; the native
+ * layer has no style setter yet, so we rebuild it (debounced) with fresh options. */
+function applyStyle(): void {
+  if (state.native) {
+    window.clearTimeout(_styleDebounce);
+    _styleDebounce = window.setTimeout(() => void rebuildNative(), 200);
+  } else {
+    state.layer?.setOpacity(state.style.opacity);
+    state.layer?.setColormap(buildColormap(state.style.colormapName));
+    state.layer?.setClim(state.style.clim);
+  }
+}
+
+async function rebuildNative(): Promise<void> {
+  const app = state.app;
+  const spec = state.spec;
+  if (!app?.addZarrLayer || !spec) return;
+  const map = app.getMap?.();
+  if (state.nativeLayerId && map) {
+    try {
+      map.removeLayer(state.nativeLayerId);
+    } catch {
+      /* already gone */
+    }
+    app.unregisterExternalNativeLayer?.(state.nativeLayerId);
+  }
+  state.nativeLayerId = await app.addZarrLayer(nativeName(spec), spec.zarrHref, buildZarrOptions(spec));
+}
+
+async function renderLayer(spec: RenderSpec, bbox: [number, number, number, number] | null): Promise<void> {
   const app = state.app;
   const map = app?.getMap?.();
   if (!app || !map) {
@@ -114,41 +183,50 @@ function renderLayer(spec: RenderSpec, bbox: [number, number, number, number] | 
   state.selector = {};
   for (const d of spec.dims) state.selector[d.key] = d.index;
 
-  const zarrVersion = spec.zarrVersion === 2 || spec.zarrVersion === 3 ? spec.zarrVersion : undefined;
-  const layer = new ZarrLayer({
-    id: LAYER_ID,
-    source: spec.zarrHref,
-    variable: spec.variable,
-    clim: spec.clim,
-    colormap: buildColormap(spec.colormapName),
-    opacity: 1,
-    selector: { ...state.selector },
-    crs: spec.crs,
-    ...(zarrVersion != null ? { zarrVersion } : {}),
-    ...(spec.fillValue != null ? { fillValue: spec.fillValue } : {}),
-    ...(spec.proj4 != null ? { proj4: spec.proj4 } : {}),
-  });
-
-  map.addLayer(layer);
-  app.registerExternalNativeLayer?.({
-    id: LAYER_ID,
-    name: `OCS: ${spec.datasetId}`,
-    // Declare a plugin-painted raster: `type: "raster"` keeps GeoLibre from showing its
-    // vector fill/stroke editor, and `controlOwnsPaint` tells it this plugin owns the
-    // rendering (colours come from the zarr-layer colormap, not MapLibre paint).
-    type: "raster",
-    nativeLayerIds: [LAYER_ID],
-    opacity: 1,
-    metadata: {
-      datasetId: spec.datasetId,
-      source: spec.source,
-      ocsUrl: state.ocsUrl,
-      pluginId: PLUGIN_ID,
-      externalNativeLayer: true,
-      controlOwnsPaint: true,
-    },
-  });
-  state.layer = layer;
+  if (app.addZarrLayer) {
+    // Native path (GeoLibre >= #1447): render through the host's own zarr-layer — no
+    // bundled second copy, native Layers/Style-panel integration, CRS from proj4.
+    state.native = true;
+    state.nativeLayerId = await app.addZarrLayer(nativeName(spec), spec.zarrHref, buildZarrOptions(spec));
+  } else {
+    // Fallback path (older GeoLibre): our bundled zarr-layer as a custom MapLibre layer,
+    // registered so it appears in the Layers panel; paintMode/paintBridge (also #1447)
+    // let GeoLibre's Style panel drop inert controls and bridge opacity to our layer.
+    state.native = false;
+    const zarrVersion = spec.zarrVersion === 2 || spec.zarrVersion === 3 ? spec.zarrVersion : undefined;
+    const layer = new ZarrLayer({
+      id: LAYER_ID,
+      source: spec.zarrHref,
+      variable: spec.variable,
+      clim: state.style.clim,
+      colormap: buildColormap(state.style.colormapName),
+      opacity: state.style.opacity,
+      selector: { ...state.selector },
+      crs: spec.crs,
+      ...(zarrVersion != null ? { zarrVersion } : {}),
+      ...(spec.fillValue != null ? { fillValue: spec.fillValue } : {}),
+      ...(spec.proj4 != null ? { proj4: spec.proj4 } : {}),
+    });
+    map.addLayer(layer);
+    app.registerExternalNativeLayer?.({
+      id: LAYER_ID,
+      name: nativeName(spec),
+      type: "raster",
+      nativeLayerIds: [LAYER_ID],
+      opacity: state.style.opacity,
+      paintMode: "plugin",
+      paintBridge: { setOpacity: (o) => layer.setOpacity(o) },
+      metadata: {
+        datasetId: spec.datasetId,
+        source: spec.source,
+        ocsUrl: state.ocsUrl,
+        pluginId: PLUGIN_ID,
+        externalNativeLayer: true,
+        controlOwnsPaint: true,
+      },
+    });
+    state.layer = layer;
+  }
 
   if (bbox && app.fitBounds) app.fitBounds(bbox);
 }
@@ -163,7 +241,7 @@ async function loadDataset(datasetId: string): Promise<void> {
     state.datasetId = datasetId;
     state.spec = spec;
     state.style = { colormapName: spec.colormapName, clim: spec.clim, opacity: 1 };
-    renderLayer(spec, bbox);
+    await renderLayer(spec, bbox);
     renderMeta(spec);
     renderDimControls(spec);
     renderLegend(spec);
@@ -320,7 +398,7 @@ function renderStyleControls(spec: RenderSpec): void {
     const v = Number(opSlider.value);
     state.style.opacity = v;
     opValue.textContent = v.toFixed(2);
-    state.layer?.setOpacity(v);
+    applyStyle();
   });
   opBlock.appendChild(opSlider);
   host.appendChild(opBlock);
@@ -337,7 +415,7 @@ function renderStyleControls(spec: RenderSpec): void {
   cmSelect.value = state.style.colormapName;
   cmSelect.addEventListener("change", () => {
     state.style.colormapName = cmSelect.value;
-    state.layer?.setColormap(buildColormap(cmSelect.value));
+    applyStyle();
     renderLegend(spec);
   });
   cmRow.appendChild(cmSelect);
@@ -358,7 +436,7 @@ function renderStyleControls(spec: RenderSpec): void {
     const mx = Number(maxInput.value);
     if (Number.isFinite(mn) && Number.isFinite(mx) && mn < mx) {
       state.style.clim = [mn, mx];
-      state.layer?.setClim([mn, mx]);
+      applyStyle();
       renderLegend(spec);
     }
   };

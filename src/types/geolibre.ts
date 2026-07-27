@@ -22,7 +22,24 @@ export interface GeoLibrePlugin {
   applyProjectState?: (app: GeoLibreAppAPI, state: unknown) => boolean | void;
 }
 
+/** Options for the native `addZarrLayer` (GeoLibre #1447), mirroring `addCogLayer`. */
+export interface GeoLibreZarrLayerOptions {
+  variable: string;
+  selector?: Record<string, number | string>;
+  clim?: [number, number];
+  colormap?: string | string[];
+  opacity?: number;
+  zarrVersion?: 2 | 3;
+  crs?: string;
+  proj4?: string;
+  bounds?: [number, number, number, number];
+  headers?: Record<string, string>;
+}
+
 export interface GeoLibreAppAPI {
+  // Native Zarr rendering through GeoLibre's own @carbonplan/zarr-layer (GeoLibre #1447).
+  addZarrLayer?: (name: string, url: string, options: GeoLibreZarrLayerOptions) => Promise<string>;
+  setZarrLayerSelector?: (layerId: string, selector: Record<string, number | string>) => Promise<boolean>;
   registerExternalNativeLayer?: (layer: GeoLibreExternalNativeLayerRegistration) => void;
   unregisterExternalNativeLayer?: (id: string) => void;
   fetchArrayBuffer?: (url: string) => Promise<ArrayBuffer>;
@@ -53,6 +70,13 @@ export interface GeoLibreExternalNativeLayerRegistration {
   beforeId?: string;
   opacity?: number;
   metadata?: Record<string, unknown>;
+  // GeoLibre #1447: declare that the plugin paints the layer so the Style panel drops the
+  // controls it can't reach, and optionally bridge opacity/visibility to the custom layer.
+  paintMode?: "plugin";
+  paintBridge?: {
+    setOpacity?: (opacity: number) => void;
+    setVisibility?: (visible: boolean) => void;
+  };
 }
 
 export interface GeoLibreMapLike {
