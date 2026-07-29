@@ -1,6 +1,6 @@
 import { defineConfig } from "vite";
 
-// Single-file ES bundle for GeoLibre Desktop. zarr-layer and its deps (zarrita,
+// Single-file ES bundle for GeoLibre. zarr-layer and its deps (zarrita,
 // numcodecs, proj4, chroma-js) are bundled in; MapLibre is provided by the GeoLibre
 // host and is never imported here (we drive the map through the app API).
 export default defineConfig({

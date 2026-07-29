@@ -1,4 +1,4 @@
-// GeoLibre Desktop plugin API surface. Mirrors the public interface exposed by
+// GeoLibre plugin API surface. Mirrors the public interface exposed by
 // GeoLibre (see helsharif/geolibre-netcdf-loader-plugin). Only the members this
 // plugin uses need to be present at runtime; the app may not implement every
 // optional method, so all calls are guarded.

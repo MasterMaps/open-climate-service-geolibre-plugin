@@ -1,6 +1,6 @@
 # Open Climate Service — GeoLibre plugin
 
-A [GeoLibre](https://geolibre.app/) Desktop plugin that browses an **Open Climate Service** (OCS) STAC catalog and renders its published GeoZarr datasets — taking the **CRS, time axis, and variable straight from STAC**, so projected national grids (e.g. seNorge on `EPSG:32633`) land in the right place with no manual entry.
+A [GeoLibre](https://geolibre.app/) plugin that browses an **Open Climate Service** (OCS) STAC catalog and renders its published GeoZarr datasets — taking the **CRS, time axis, and variable straight from STAC**, so projected national grids (e.g. seNorge on `EPSG:32633`) land in the right place with no manual entry.
 
 It renders with [`@carbonplan/zarr-layer`](https://github.com/carbonplan/zarr-layer) and depends only on OCS's public HTTP contract (`/stac` + `/zarr/{id}/`), not on the OCS server internals. Tracking issue: [dhis2/open-climate-service#301](https://github.com/dhis2/open-climate-service/issues/301).
 
@@ -26,7 +26,7 @@ npm install
 npm run package:geolibre   # typecheck + vite build + zip → geolibre-plugin/open-climate-service-<version>.zip
 ```
 
-Then in GeoLibre Desktop: **Settings → Manage Plugins → Install from file** and select the generated zip (or add the unpacked `geolibre-plugin/` directory).
+Then in GeoLibre: **Settings → Manage Plugins → Install from file** and select the generated zip (or add the unpacked `geolibre-plugin/` directory).
 
 ## Development
 

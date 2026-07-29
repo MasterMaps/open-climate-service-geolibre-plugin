@@ -1,7 +1,7 @@
 {
   "name": "open-climate-service-geolibre-plugin",
   "version": "0.1.11",
-  "description": "GeoLibre Desktop plugin that browses an Open Climate Service STAC catalog and renders its published GeoZarr datasets.",
+  "description": "GeoLibre plugin that browses an Open Climate Service STAC catalog and renders its published GeoZarr datasets.",
   "type": "module",
   "private": true,
   "license": "MIT",
