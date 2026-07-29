@@ -1,17 +1,23 @@
 name: Release
 
-# Tag a version to publish it, e.g.:
-#   git tag v0.1.12 && git push origin v0.1.12
-# This builds the plugin and attaches the installable zip to a GitHub Release, so
-# users can install it via GeoLibre → Settings → Manage Plugins → Install from file
-# without a Node toolchain.
+# Auto-release on merge to main. When main's package.json version has no matching
+# GitHub Release yet, this builds the plugin and publishes `v<version>` with the
+# installable zip attached — so users can install via GeoLibre → Settings → Manage
+# Plugins → Install from file without a Node toolchain.
+#
+# To cut a release: bump the version in package.json in a PR and merge it. Merges
+# that don't change the version are a no-op (the version already has a release), so
+# no duplicate releases are created.
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main]
 
 permissions:
-  contents: write # create the release and upload the zip
+  contents: write # create the tag + release and upload the zip
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -19,32 +25,47 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Read the version and decide up front, so an unrelated merge skips the build.
+      # jq (a preinstalled runner tool with stable output) avoids depending on whatever
+      # Node the runner image ships before actions/setup-node runs below.
+      - name: Check whether this version needs releasing
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(jq -r .version package.json)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "Release v$VERSION already exists — nothing to do."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "No release for v$VERSION yet — will publish."
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/setup-node@v4
+        if: steps.check.outputs.release == 'true'
         with:
           node-version: 20
           cache: npm
 
-      - run: npm ci
+      - if: steps.check.outputs.release == 'true'
+        run: npm ci
 
-      - name: Verify tag matches package.json version
-        run: |
-          PKG=$(node -p "require('./package.json').version")
-          TAG="${GITHUB_REF_NAME#v}"
-          if [ "$PKG" != "$TAG" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $PKG" >&2
-            exit 1
-          fi
+      - if: steps.check.outputs.release == 'true'
+        run: npm test
 
-      - run: npm test
-
-      - run: npm run package:geolibre
+      - if: steps.check.outputs.release == 'true'
+        run: npm run package:geolibre
 
       - name: Create GitHub Release
+        if: steps.check.outputs.release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          VERSION=$(node -p "require('./package.json').version")
-          gh release create "$GITHUB_REF_NAME" \
+          VERSION="${{ steps.check.outputs.version }}"
+          gh release create "v$VERSION" \
             "geolibre-plugin/open-climate-service-${VERSION}.zip" \
-            --title "v${VERSION}" \
+            --target "$GITHUB_SHA" \
+            --title "v$VERSION" \
             --generate-notes
