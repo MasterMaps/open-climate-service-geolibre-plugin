@@ -20,6 +20,8 @@ export interface DimState {
   steps: Array<string | number>;
   count: number;
   index: number;
+  /** True for a real date axis — driven by GeoLibre's native Time Slider, not our panel. */
+  isTemporal: boolean;
 }
 
 export interface RenderSpec {
@@ -31,10 +33,18 @@ export interface RenderSpec {
   fillValue: number | null;
   crs: string;
   proj4: string | null;
+  bounds: [number, number, number, number] | null;
   zarrVersion: number | null;
   units: string;
   source: string | null;
+  temporalResolution: string | null;
   dims: DimState[];
+}
+
+/** The instance's configured spatial extent (`<ocsUrl>/extent`). */
+export interface InstanceExtent {
+  name: string | null;
+  bbox: [number, number, number, number];
 }
 
 const MAX_STEPS = 20000;
@@ -139,6 +149,41 @@ function buildSteps(dim: StacJson): Array<string | number> {
   return [];
 }
 
+const _ISO_STEP_LABELS: Record<string, string> = {
+  PT1H: "Hourly",
+  P1D: "Daily",
+  P7D: "Weekly",
+  P1M: "Monthly",
+  P3M: "Seasonal",
+  P1Y: "Yearly",
+};
+
+/** Human label for a dataset's temporal resolution, from its temporal dimension's ISO step. */
+function temporalResolutionLabel(dimensions: StacJson): string | null {
+  for (const v of Object.values(dimensions)) {
+    const dim = v as StacJson;
+    if (dim.type === "temporal" && typeof dim.step === "string" && dim.step) {
+      return _ISO_STEP_LABELS[dim.step] ?? dim.step;
+    }
+  }
+  return null;
+}
+
+/** Fetch the instance's configured extent from `<ocsUrl>/extent`; null if unavailable. */
+export async function fetchInstanceExtent(ocsUrl: string): Promise<InstanceExtent | null> {
+  try {
+    const res = await fetch(`${stripTrailingSlashes(ocsUrl)}/extent`);
+    if (!res.ok) return null;
+    const data = (await res.json()) as StacJson;
+    const bbox = data.bbox;
+    if (!Array.isArray(bbox) || bbox.length !== 4 || !bbox.every((n) => typeof n === "number")) return null;
+    const name = typeof data.name === "string" && data.name ? data.name : null;
+    return { name, bbox: [bbox[0], bbox[1], bbox[2], bbox[3]] };
+  } catch {
+    return null;
+  }
+}
+
 /** Fetch a catalog's published collections (id + title) from `<ocsUrl>/stac`. */
 export async function fetchCatalog(ocsUrl: string): Promise<OcsCollectionSummary[]> {
   const base = stripTrailingSlashes(ocsUrl);
@@ -186,18 +231,26 @@ export function buildRenderSpec(collection: StacJson): RenderSpec {
       const count = steps.length;
       // Sliders default to the last step (latest time); dropdowns to the first.
       const index = control === "slider" ? Math.max(0, count - 1) : 0;
-      return { key, label: dimLabel(key, dim), control, steps, count, index };
+      return { key, label: dimLabel(key, dim), control, steps, count, index, isTemporal: dim.type === "temporal" };
     })
     .filter((d) => d.count >= 1);
 
   const crs = normalizeCrs(collection["proj:code"] ?? "EPSG:4326");
   const proj4: string | null = collection["open_climate_service:proj4"] ?? null;
+  // proj:bbox is the native-CRS extent; passing it as zarr-layer `bounds` avoids a
+  // render-time fetch of the x/y coordinate arrays to derive them.
+  const rawBbox = collection["proj:bbox"];
+  const bounds: [number, number, number, number] | null =
+    Array.isArray(rawBbox) && rawBbox.length === 4 && rawBbox.every((n) => typeof n === "number")
+      ? [rawBbox[0], rawBbox[1], rawBbox[2], rawBbox[3]]
+      : null;
   const zarrVersion: number | null = zarr["zarr:zarr_format"] ?? null;
   const units: string =
     renders["open_climate_service:units"] ?? collection["cube:variables"]?.[variable]?.unit ?? "";
   const keywords: string[] = Array.isArray(collection.keywords) ? collection.keywords : [];
   const source =
     keywords.find((k) => k !== "zarr" && k !== "stac" && k !== variable && k !== collection.id) ?? null;
+  const temporalResolution = temporalResolutionLabel(dimensions);
 
-  return { datasetId: collection.id, zarrHref: zarr.href, variable, clim, colormapName, fillValue, crs, proj4, zarrVersion, units, source, dims };
+  return { datasetId: collection.id, zarrHref: zarr.href, variable, clim, colormapName, fillValue, crs, proj4, bounds, zarrVersion, units, source, temporalResolution, dims };
 }

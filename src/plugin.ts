@@ -1,8 +1,17 @@
 import "./styles.css";
 import { ZarrLayer } from "@carbonplan/zarr-layer";
 import { buildColormap } from "./colormap";
-import { buildRenderSpec, fetchCatalog, fetchCollection, type DimState, type OcsCollectionSummary, type RenderSpec } from "./ocs";
-import type { GeoLibreAppAPI, GeoLibrePlugin, GeoLibreZarrLayerOptions } from "./types/geolibre";
+import {
+  buildRenderSpec,
+  fetchCatalog,
+  fetchCollection,
+  fetchInstanceExtent,
+  type DimState,
+  type InstanceExtent,
+  type OcsCollectionSummary,
+  type RenderSpec,
+} from "./ocs";
+import type { GeoLibreAppAPI, GeoLibrePlugin, GeoLibreTimeGranularity, GeoLibreZarrLayerOptions } from "./types/geolibre";
 
 const PLUGIN_ID = "open-climate-service";
 const PANEL_ID = "ocs-panel";
@@ -14,24 +23,28 @@ interface PluginState {
   app?: GeoLibreAppAPI;
   ocsUrl: string;
   collections: OcsCollectionSummary[];
+  instanceExtent: InstanceExtent | null;
   datasetId: string | null;
   spec: RenderSpec | null;
   selector: Record<string, number>;
   layer: ZarrLayer | null; // fallback path: our bundled zarr-layer instance
   nativeLayerId: string | null; // native path: id returned by app.addZarrLayer
   native: boolean; // true when rendering via GeoLibre's native addZarrLayer
+  temporalDetach: (() => void) | null; // unbinds the layer from the native Time Slider (#1448)
   style: { colormapName: string; clim: [number, number]; opacity: number };
 }
 
 const state: PluginState = {
   ocsUrl: "",
   collections: [],
+  instanceExtent: null,
   datasetId: null,
   spec: null,
   selector: {},
   layer: null,
   nativeLayerId: null,
   native: false,
+  temporalDetach: null,
   style: { colormapName: "viridis", clim: [0, 100], opacity: 1 },
 };
 
@@ -105,10 +118,15 @@ function buildZarrOptions(spec: RenderSpec): GeoLibreZarrLayerOptions {
     ...(zarrVersion != null ? { zarrVersion } : {}),
     ...(spec.crs ? { crs: spec.crs } : {}),
     ...(spec.proj4 != null ? { proj4: spec.proj4 } : {}),
+    ...(spec.bounds ? { bounds: spec.bounds } : {}),
   };
 }
 
 function removeLayer(): void {
+  if (state.temporalDetach) {
+    state.temporalDetach();
+    state.temporalDetach = null;
+  }
   const map = state.app?.getMap?.();
   if (state.native && state.nativeLayerId) {
     if (map) {
@@ -140,6 +158,82 @@ function applySelector(): void {
   }
 }
 
+/** Parse a STAC time-step string ("2026-01-01" or "2026-01-01 00:00") to epoch ms. */
+function stepTime(step: string | number): number {
+  return new Date(String(step).replace(" ", "T")).getTime();
+}
+
+/** Nearest time-step index to a Date, for the Time Slider adapter. */
+function nearestTimeIndex(steps: Array<string | number>, date: Date): number {
+  const target = date.getTime();
+  let best = -1;
+  let bestDiff = Infinity;
+  for (let i = 0; i < steps.length; i++) {
+    const t = stepTime(steps[i]);
+    if (Number.isNaN(t)) continue;
+    const diff = Math.abs(t - target);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      best = i;
+    }
+  }
+  return best;
+}
+
+/** The dataset's period type as a Time Slider stepping granularity (undefined → let GeoLibre
+ * auto-pick from the span). Honored once GeoLibre supports adapter granularity (see issue). */
+function granularityForPeriod(period: string | null): GeoLibreTimeGranularity | undefined {
+  switch (period) {
+    case "Hourly":
+      return "hour";
+    case "Daily":
+    case "Weekly":
+      return "day";
+    case "Monthly":
+    case "Seasonal":
+      return "month";
+    case "Yearly":
+      return "year";
+    default:
+      return undefined;
+  }
+}
+
+/** Bind the dataset's time dimension to GeoLibre's native Time Slider (#1448), so the
+ * timeline drives the layer's time selector. Replaces our own in-panel time slider. */
+function bindToTimeSlider(spec: RenderSpec, layerId: string): void {
+  const app = state.app;
+  if (!app?.registerTemporalLayer) return;
+  const timeDim = spec.dims.find((d) => d.isTemporal && d.count > 1);
+  if (!timeDim) {
+    // No periods (e.g. a single-year dataset like WorldPop population): drop the
+    // temporal adapter GeoLibre's addZarrLayer auto-registers from the store's time
+    // axis, so the layer isn't treated as temporal / bindable to the Time Slider.
+    app.unregisterTemporalLayer?.(layerId);
+    return;
+  }
+  // ISO strings (index-aligned with the store's time axis) for the Time Slider to parse.
+  const values = timeDim.steps.map((s) => String(s).replace(" ", "T"));
+  const granularity = granularityForPeriod(spec.temporalResolution);
+  state.temporalDetach = app.registerTemporalLayer(
+    layerId,
+    {
+      dimension: timeDim.key,
+      getTimeValues: () => values,
+      setTime: (date) => {
+        const index = nearestTimeIndex(timeDim.steps, date);
+        if (index < 0) return;
+        state.selector[timeDim.key] = index;
+        applySelector();
+      },
+      // Step by the dataset's period type, and constrain the slider's unit controls to it
+      // (e.g. a daily cube shows a day-only track). Honored once GeoLibre #1502 lands.
+      ...(granularity ? { granularity, displayUnits: [granularity] } : {}),
+    },
+    { bind: true },
+  );
+}
+
 let _styleDebounce: number | undefined;
 
 /** Apply live colormap/clim/opacity. Fallback layer has in-place setters; the native
@@ -149,7 +243,8 @@ function applyStyle(): void {
     window.clearTimeout(_styleDebounce);
     _styleDebounce = window.setTimeout(() => void rebuildNative(), 200);
   } else {
-    state.layer?.setOpacity(state.style.opacity);
+    // Opacity is owned by GeoLibre's Style panel (via paintBridge), so we don't touch it
+    // here — re-applying it on a colormap/clim change would fight the user's setting.
     state.layer?.setColormap(buildColormap(state.style.colormapName));
     state.layer?.setClim(state.style.clim);
   }
@@ -168,7 +263,13 @@ async function rebuildNative(): Promise<void> {
     }
     app.unregisterExternalNativeLayer?.(state.nativeLayerId);
   }
+  // The rebuild mints a new layer id, so re-bind it to the Time Slider (#1448).
+  if (state.temporalDetach) {
+    state.temporalDetach();
+    state.temporalDetach = null;
+  }
   state.nativeLayerId = await app.addZarrLayer(nativeName(spec), spec.zarrHref, buildZarrOptions(spec));
+  bindToTimeSlider(spec, state.nativeLayerId);
 }
 
 async function renderLayer(spec: RenderSpec, bbox: [number, number, number, number] | null): Promise<void> {
@@ -183,18 +284,12 @@ async function renderLayer(spec: RenderSpec, bbox: [number, number, number, numb
   state.selector = {};
   for (const d of spec.dims) state.selector[d.key] = d.index;
 
-  // Diagnostic: which path + is the native API present on the app object we were given?
-  console.info(
-    `[OCS] render path: ${app.addZarrLayer ? "NATIVE addZarrLayer" : "FALLBACK registerExternalNativeLayer"}`,
-    `| typeof addZarrLayer: ${typeof app.addZarrLayer}`,
-    `| app keys: ${Object.keys(app).join(", ")}`,
-  );
-
   if (app.addZarrLayer) {
     // Native path (GeoLibre >= #1447): render through the host's own zarr-layer — no
     // bundled second copy, native Layers/Style-panel integration, CRS from proj4.
     state.native = true;
     state.nativeLayerId = await app.addZarrLayer(nativeName(spec), spec.zarrHref, buildZarrOptions(spec));
+    bindToTimeSlider(spec, state.nativeLayerId);
   } else {
     // Fallback path (older GeoLibre): our bundled zarr-layer as a custom MapLibre layer,
     // registered so it appears in the Layers panel; paintMode/paintBridge (also #1447)
@@ -213,6 +308,7 @@ async function renderLayer(spec: RenderSpec, bbox: [number, number, number, numb
       ...(zarrVersion != null ? { zarrVersion } : {}),
       ...(spec.fillValue != null ? { fillValue: spec.fillValue } : {}),
       ...(spec.proj4 != null ? { proj4: spec.proj4 } : {}),
+      ...(spec.bounds ? { bounds: spec.bounds } : {}),
     });
     map.addLayer(layer);
     app.registerExternalNativeLayer?.({
@@ -235,7 +331,44 @@ async function renderLayer(spec: RenderSpec, bbox: [number, number, number, numb
     state.layer = layer;
   }
 
-  if (bbox && app.fitBounds) app.fitBounds(bbox);
+  // Keep the current view while the instance extent is reasonably framed (the user is
+  // looking at the country); re-frame the dataset if we've navigated off it or zoomed so
+  // far out it's tiny. Right after connect the view is the instance extent, so selecting a
+  // dataset won't jump the camera.
+  if (bbox && app.fitBounds && shouldFitToDataset()) app.fitBounds(bbox);
+}
+
+function currentViewBbox(): [number, number, number, number] | null {
+  const bounds = state.app?.getMap?.()?.getBounds?.();
+  if (!bounds) return null;
+  const [[west, south], [east, north]] = bounds.toArray();
+  return [west, south, east, north];
+}
+
+function bboxesIntersect(
+  a: [number, number, number, number],
+  b: [number, number, number, number],
+): boolean {
+  return a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
+}
+
+// Re-frame on the dataset once the instance extent fills less than ~1/this of the view's
+// tighter axis — i.e. the country has shrunk to a speck from zooming out.
+const MAX_EXTENT_ZOOM_OUT = 2.5;
+
+/** Whether to re-frame on the dataset: when we've navigated off the instance extent, or
+ * zoomed so far out that the extent is tiny. Otherwise keep the current view. */
+function shouldFitToDataset(): boolean {
+  const ext = state.instanceExtent;
+  if (!ext) return true;
+  const view = currentViewBbox();
+  if (!view) return true;
+  if (!bboxesIntersect(view, ext.bbox)) return true; // navigated off the extent
+  const extW = ext.bbox[2] - ext.bbox[0];
+  const extH = ext.bbox[3] - ext.bbox[1];
+  if (extW <= 0 || extH <= 0) return false;
+  const zoomOut = Math.min((view[2] - view[0]) / extW, (view[3] - view[1]) / extH);
+  return zoomOut > MAX_EXTENT_ZOOM_OUT; // extent too small in view → re-frame
 }
 
 async function loadDataset(datasetId: string): Promise<void> {
@@ -267,13 +400,17 @@ async function connect(ocsUrl: string): Promise<void> {
   }
   setStatus("Connecting…");
   try {
-    const collections = await fetchCatalog(state.ocsUrl);
+    const [collections, extent] = await Promise.all([
+      fetchCatalog(state.ocsUrl),
+      fetchInstanceExtent(state.ocsUrl),
+    ]);
     state.collections = collections;
+    state.instanceExtent = extent;
     renderCollectionOptions();
-    setStatus(collections.length ? `${collections.length} datasets found.` : "No published datasets found.");
-    if (collections.length && !state.datasetId) {
-      // don't auto-load; let the user pick (deep-link path loads explicitly)
-    }
+    // Frame the instance extent up front, before any dataset is selected.
+    if (extent && state.app?.fitBounds) state.app.fitBounds(extent.bbox);
+    const where = extent?.name ? `${extent.name} — ` : "";
+    setStatus(collections.length ? `${where}${collections.length} datasets` : `${where}no published datasets`);
   } catch (err) {
     setStatus(`Could not reach ${state.ocsUrl}/stac: ${(err as Error).message}`, true);
   }
@@ -308,6 +445,7 @@ function renderMeta(spec: RenderSpec): void {
   };
   panel.meta.appendChild(row("Variable", spec.variable));
   panel.meta.appendChild(row("Units", spec.units));
+  if (spec.temporalResolution) panel.meta.appendChild(row("Period type", spec.temporalResolution));
   panel.meta.appendChild(row("CRS", spec.crs));
   if (spec.source) panel.meta.appendChild(row("Source", spec.source));
 }
@@ -320,7 +458,9 @@ function stepLabel(dim: DimState, i: number): string {
 function renderDimControls(spec: RenderSpec): void {
   if (!panel) return;
   panel.dims.replaceChildren();
-  const stepping = spec.dims.filter((d) => d.count > 1);
+  // The temporal axis, when bound to GeoLibre's Time Slider (#1448), is driven there — not
+  // here — so drop it from our panel to avoid a duplicate time control.
+  const stepping = spec.dims.filter((d) => d.count > 1 && !(d.isTemporal && state.temporalDetach != null));
   panel.dims.classList.toggle("ocs-hidden", stepping.length === 0);
 
   for (const dim of stepping) {
@@ -381,34 +521,14 @@ function renderLegend(spec: RenderSpec): void {
   panel.legend.appendChild(scale);
 }
 
-// Interactive raster styling — owned here (our panel), driving zarr-layer's real
-// methods, because GeoLibre's right-panel raster paint doesn't reach a custom layer.
+// Colormap + rescale styling — owned here because GeoLibre's right-panel raster controls
+// don't reach zarr-layer's colormap/clim. Opacity is intentionally NOT offered here: it's
+// driven by GeoLibre's Style panel (the native addZarrLayer layer, or the fallback's
+// paintBridge.setOpacity), so exposing our own slider would duplicate that control.
 function renderStyleControls(spec: RenderSpec): void {
   if (!panel) return;
   const host = panel.styleControls;
   host.replaceChildren();
-
-  // Opacity slider → layer.setOpacity
-  const opBlock = el("div", "ocs-dim");
-  const opHeader = el("div", "ocs-dim-header");
-  opHeader.appendChild(el("span", "ocs-dim-label", "Opacity"));
-  const opValue = el("span", "ocs-dim-value", state.style.opacity.toFixed(2));
-  opHeader.appendChild(opValue);
-  opBlock.appendChild(opHeader);
-  const opSlider = el("input", "ocs-slider");
-  opSlider.type = "range";
-  opSlider.min = "0";
-  opSlider.max = "1";
-  opSlider.step = "0.05";
-  opSlider.value = String(state.style.opacity);
-  opSlider.addEventListener("input", () => {
-    const v = Number(opSlider.value);
-    state.style.opacity = v;
-    opValue.textContent = v.toFixed(2);
-    applyStyle();
-  });
-  opBlock.appendChild(opSlider);
-  host.appendChild(opBlock);
 
   // Colormap dropdown → layer.setColormap
   const cmRow = el("div", "ocs-row");
@@ -466,6 +586,9 @@ function renderPanel(container: HTMLElement): () => void {
   urlInput.type = "text";
   urlInput.placeholder = "https://my-climate-service.org";
   urlInput.value = state.ocsUrl;
+  urlInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") void connect(urlInput.value);
+  });
   urlRow.appendChild(el("label", "ocs-field-label", "Open Climate Service URL"));
   urlRow.appendChild(urlInput);
   urlRow.appendChild(button("Connect", () => void connect(urlInput.value)));
@@ -514,7 +637,7 @@ let unregisterPanel: (() => void) | undefined;
 export const plugin: GeoLibrePlugin = {
   id: PLUGIN_ID,
   name: "Open Climate Service",
-  version: "0.1.1",
+  version: "0.1.11",
   urlParameterNames: [OCS_URL_PARAM, DATASET_PARAM],
 
   activate(app) {
