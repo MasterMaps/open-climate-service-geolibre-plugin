@@ -67,7 +67,9 @@
 }
 
 .ocs-status.ocs-error {
-  color: #f87171;
+  /* GeoLibre's semantic destructive color so error text keeps sufficient contrast
+     in both light and dark themes; darker red fallback if the token is absent. */
+  color: hsl(var(--destructive, 0 72% 42%));
   opacity: 1;
 }
 
