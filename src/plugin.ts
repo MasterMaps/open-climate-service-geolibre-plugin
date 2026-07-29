@@ -34,6 +34,15 @@ interface PluginState {
   style: { colormapName: string; clim: [number, number]; opacity: number };
 }
 
+/** The serializable subset of state persisted via getProjectState / restored via
+ * applyProjectState. Deliberately excludes the live runtime fields (app, layer, detachers)
+ * that must not round-trip through a saved project. */
+interface OcsProjectState {
+  ocsUrl?: string;
+  datasetId?: string | null;
+  selector?: Record<string, number>;
+}
+
 const state: PluginState = {
   ocsUrl: "",
   collections: [],
@@ -371,12 +380,26 @@ function shouldFitToDataset(): boolean {
   return zoomOut > MAX_EXTENT_ZOOM_OUT; // extent too small in view → re-frame
 }
 
-async function loadDataset(datasetId: string): Promise<void> {
+/** Restore a persisted dimension selection onto the spec's dims. renderLayer seeds
+ * state.selector (and the panel controls read `dim.index`), so applying it here is what
+ * makes a restored project open at the saved step. Keys absent from the current store, or
+ * indices out of range, are ignored — a saved project may predate a dataset change. */
+function applySavedSelector(spec: RenderSpec, saved: Record<string, number>): void {
+  for (const dim of spec.dims) {
+    const v = saved[dim.key];
+    if (typeof v === "number" && Number.isInteger(v) && v >= 0 && v < dim.count) {
+      dim.index = v;
+    }
+  }
+}
+
+async function loadDataset(datasetId: string, savedSelector?: Record<string, number>): Promise<void> {
   if (!state.ocsUrl) return;
   setStatus(`Loading ${datasetId}…`);
   try {
     const collection = await fetchCollection(state.ocsUrl, datasetId);
     const spec = buildRenderSpec(collection);
+    if (savedSelector) applySavedSelector(spec, savedSelector);
     const bbox = collection.extent?.spatial?.bbox?.[0] ?? null;
     state.datasetId = datasetId;
     state.spec = spec;
@@ -677,10 +700,11 @@ export const plugin: GeoLibrePlugin = {
 
   applyProjectState(app, raw) {
     state.app = app;
-    const s = (raw ?? {}) as Partial<PluginState>;
+    const s = (raw ?? {}) as OcsProjectState;
     if (typeof s.ocsUrl === "string" && s.ocsUrl) {
+      const savedSelector = s.selector && typeof s.selector === "object" ? s.selector : undefined;
       void connect(s.ocsUrl).then(() => {
-        if (s.datasetId) return loadDataset(s.datasetId);
+        if (s.datasetId) return loadDataset(s.datasetId, savedSelector);
       });
     }
   },
