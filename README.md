@@ -22,8 +22,8 @@ GeoLibre go to **Settings → Manage Plugins → Install from file** and select 
 ## Usage
 
 1. Activate **Open Climate Service** from GeoLibre's **Plugins** menu.
-2. In the panel, enter your OCS instance URL (e.g. `http://localhost:8002`) and click **Connect**.
-3. Pick a dataset. The map frames the instance's region and draws the layer.
+2. In the panel, enter your OCS instance URL (e.g. `http://localhost:8002`) and click **Connect** — the map frames the instance's region.
+3. Pick a dataset to draw it as a layer.
 4. Step through periods with the **time slider** at the bottom of the map, and adjust the
    **colormap** and **value range** in the panel.
 
