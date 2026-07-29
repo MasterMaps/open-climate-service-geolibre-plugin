@@ -245,8 +245,9 @@ export function buildRenderSpec(collection: StacJson): RenderSpec {
       ? [rawBbox[0], rawBbox[1], rawBbox[2], rawBbox[3]]
       : null;
   const zarrVersion: number | null = zarr["zarr:zarr_format"] ?? null;
-  const units: string =
-    renders["open_climate_service:units"] ?? collection["cube:variables"]?.[variable]?.unit ?? "";
+  // Units come from the datacube-standard cube:variables[<var>].unit (OCS no longer
+  // emits a custom open_climate_service:units render field).
+  const units: string = collection["cube:variables"]?.[variable]?.unit ?? "";
   const keywords: string[] = Array.isArray(collection.keywords) ? collection.keywords : [];
   const source =
     keywords.find((k) => k !== "zarr" && k !== "stac" && k !== variable && k !== collection.id) ?? null;
