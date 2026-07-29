@@ -1,0 +1,50 @@
+name: Release
+
+# Tag a version to publish it, e.g.:
+#   git tag v0.1.12 && git push origin v0.1.12
+# This builds the plugin and attaches the installable zip to a GitHub Release, so
+# users can install it via GeoLibre → Settings → Manage Plugins → Install from file
+# without a Node toolchain.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # create the release and upload the zip
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Verify tag matches package.json version
+        run: |
+          PKG=$(node -p "require('./package.json').version")
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$PKG" != "$TAG" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $PKG" >&2
+            exit 1
+          fi
+
+      - run: npm test
+
+      - run: npm run package:geolibre
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          gh release create "$GITHUB_REF_NAME" \
+            "geolibre-plugin/open-climate-service-${VERSION}.zip" \
+            --title "v${VERSION}" \
+            --generate-notes

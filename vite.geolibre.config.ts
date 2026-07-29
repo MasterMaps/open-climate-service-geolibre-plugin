@@ -1,10 +1,17 @@
+import { readFileSync } from "node:fs";
 import { defineConfig } from "vite";
+
+// Single source of truth for the plugin version: package.json. Injected into the
+// bundle below so the plugin object's `version` can't drift from the manifest (the
+// GeoLibre registry requires the entry module's version to match plugin.json).
+const { version } = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
 
 // Single-file ES bundle for GeoLibre. zarr-layer and its deps (zarrita,
 // numcodecs, proj4, chroma-js) are bundled in; MapLibre is provided by the GeoLibre
 // host and is never imported here (we drive the map through the app API).
 export default defineConfig({
   publicDir: false,
+  define: { __OCS_PLUGIN_VERSION__: JSON.stringify(version) },
   build: {
     outDir: "geolibre-plugin/dist",
     emptyOutDir: true,

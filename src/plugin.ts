@@ -660,7 +660,9 @@ let unregisterPanel: (() => void) | undefined;
 export const plugin: GeoLibrePlugin = {
   id: PLUGIN_ID,
   name: "Open Climate Service",
-  version: "0.1.11",
+  // Injected from package.json at build time (see vite.geolibre.config.ts) so the
+  // manifest, bundle, and package.json versions stay in lockstep.
+  version: __OCS_PLUGIN_VERSION__,
   urlParameterNames: [OCS_URL_PARAM, DATASET_PARAM],
 
   activate(app) {
