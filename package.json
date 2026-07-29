@@ -1,0 +1,44 @@
+{
+  "name": "open-climate-service-geolibre-plugin",
+  "version": "0.1.11",
+  "description": "GeoLibre plugin that browses an Open Climate Service STAC catalog and renders its published GeoZarr datasets.",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "homepage": "https://github.com/dhis2/open-climate-service-geolibre-plugin#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dhis2/open-climate-service-geolibre-plugin.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dhis2/open-climate-service/issues"
+  },
+  "keywords": [
+    "geolibre",
+    "geolibre-plugin",
+    "open-climate-service",
+    "stac",
+    "zarr",
+    "geozarr",
+    "climate-data",
+    "gis",
+    "maplibre"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit && vite build --config vite.geolibre.config.ts",
+    "package:geolibre": "npm run build && node scripts/package-geolibre.mjs",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@carbonplan/zarr-layer": "0.6.1",
+    "chroma-js": "3.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.10",
+    "archiver": "^7.0.1",
+    "typescript": "^5.8.3",
+    "vite": "^7.0.0",
+    "vitest": "^3.2.4"
+  }
+}
