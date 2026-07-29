@@ -4,7 +4,7 @@ A [GeoLibre](https://geolibre.app/) plugin that browses an **Open Climate Servic
 
 Learn more about Open Climate Service: **<https://dhis2.github.io/open-climate-service/>**
 
-![The plugin rendering a daily mean temperature anomaly over Norway in GeoLibre](docs/screenshot.png)
+![The plugin rendering a daily mean temperature anomaly over Norway in GeoLibre](docs/ocs-plugin.png)
 
 ## Features
 
