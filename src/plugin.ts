@@ -11,7 +11,14 @@ import {
   type OcsCollectionSummary,
   type RenderSpec,
 } from "./ocs";
-import type { GeoLibreAppAPI, GeoLibrePlugin, GeoLibreTimeGranularity, GeoLibreZarrLayerOptions } from "./types/geolibre";
+import type {
+  GeoLibreAppAPI,
+  GeoLibreMapMouseEvent,
+  GeoLibrePlugin,
+  GeoLibreTimeGranularity,
+  GeoLibreZarrLayerOptions,
+  GeoLibreZarrQueryResult,
+} from "./types/geolibre";
 
 const PLUGIN_ID = "open-climate-service";
 const PANEL_ID = "ocs-panel";
@@ -32,6 +39,11 @@ interface PluginState {
   native: boolean; // true when rendering via GeoLibre's native addZarrLayer
   temporalDetach: (() => void) | null; // unbinds the layer from the native Time Slider (#1448)
   style: { colormapName: string; clim: [number, number]; opacity: number };
+  // Click-to-value (#1557): the on-map readout popup, the map handlers, and the
+  // in-flight query so a new click supersedes the previous one.
+  identify: { lngLat: [number, number]; el: HTMLElement; value: HTMLElement } | null;
+  identifyHandlers: { click: (e: unknown) => void; move: () => void } | null;
+  identifyAbort: AbortController | null;
 }
 
 /** The serializable subset of state persisted via getProjectState / restored via
@@ -55,6 +67,9 @@ const state: PluginState = {
   native: false,
   temporalDetach: null,
   style: { colormapName: "viridis", clim: [0, 100], opacity: 1 },
+  identify: null,
+  identifyHandlers: null,
+  identifyAbort: null,
 };
 
 // Curated colormaps offered in the panel (chroma/ColorBrewer names); the dataset's
@@ -132,6 +147,7 @@ function buildZarrOptions(spec: RenderSpec): GeoLibreZarrLayerOptions {
 }
 
 function removeLayer(): void {
+  removeIdentify(); // the readout belonged to the layer going away
   if (state.temporalDetach) {
     state.temporalDetach();
     state.temporalDetach = null;
@@ -165,6 +181,109 @@ function applySelector(): void {
   } else {
     state.layer?.setSelector({ ...state.selector });
   }
+}
+
+// --- click-to-value (Identify) ----------------------------------------------
+// GeoLibre #1557 exposes the renderer's queryData by layer id, so a click reads the
+// value from the same grid that's on screen — the renderer reprojects the WGS84 point
+// and masks fill values, so we don't re-open the store. No selector is passed: the read
+// uses the slice already rendered (the current time), so it never moves the map.
+
+/** Read the on-screen value at a WGS84 point via the renderer; null if unavailable. */
+async function queryValueAt(lng: number, lat: number, signal: AbortSignal): Promise<number | null> {
+  const spec = state.spec;
+  if (!spec) return null;
+  const geometry = { type: "Point" as const, coordinates: [lng, lat] as [number, number] };
+  const options = { includeSpatialCoordinates: false, signal };
+  let result: GeoLibreZarrQueryResult | null = null;
+  if (state.native && state.nativeLayerId) {
+    result = (await state.app?.queryZarrLayer?.(state.nativeLayerId, geometry, undefined, options)) ?? null;
+  } else if (state.layer) {
+    // Fallback path: we hold the ZarrLayer instance, so call queryData directly.
+    result = (await state.layer.queryData(geometry, undefined, options)) as GeoLibreZarrQueryResult;
+  }
+  if (!result) return null;
+  const values = result[spec.variable];
+  const value = Array.isArray(values) ? values[0] : values;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function formatIdentifyValue(value: number | null): string {
+  if (value === null) return "No value here";
+  const spec = state.spec;
+  const num = Math.abs(value) >= 100 ? value.toFixed(0) : value.toFixed(2);
+  return spec?.units ? `${num} ${spec.units}` : num;
+}
+
+function positionIdentify(point: { x: number; y: number }): void {
+  if (!state.identify) return;
+  state.identify.el.style.left = `${point.x}px`;
+  state.identify.el.style.top = `${point.y}px`;
+}
+
+function removeIdentify(): void {
+  state.identifyAbort?.abort();
+  state.identifyAbort = null;
+  state.identify?.el.remove();
+  state.identify = null;
+}
+
+/** Show (or replace) the readout popup anchored at the clicked pixel. */
+function showIdentify(lngLat: [number, number], point: { x: number; y: number }, text: string): void {
+  const container = state.app?.getMap?.()?.getContainer?.();
+  if (!container) return;
+  removeIdentify();
+  const wrap = el("div", "ocs-identify");
+  const value = el("span", "ocs-identify-value", text);
+  const close = el("button", "ocs-identify-close", "×");
+  close.type = "button";
+  close.addEventListener("click", removeIdentify);
+  wrap.append(value, close);
+  container.appendChild(wrap);
+  state.identify = { lngLat, el: wrap, value };
+  positionIdentify(point);
+}
+
+function onIdentifyClick(evt: unknown): void {
+  const e = evt as GeoLibreMapMouseEvent;
+  if (!state.spec || (!state.nativeLayerId && !state.layer)) return;
+  const lngLat: [number, number] = [e.lngLat.lng, e.lngLat.lat];
+  state.identifyAbort?.abort();
+  const controller = new AbortController();
+  state.identifyAbort = controller;
+  showIdentify(lngLat, e.point, "…");
+  void queryValueAt(lngLat[0], lngLat[1], controller.signal)
+    .then((value) => {
+      if (controller.signal.aborted || !state.identify) return;
+      state.identify.value.textContent = formatIdentifyValue(value);
+    })
+    .catch((err: unknown) => {
+      if ((err as { name?: string })?.name === "AbortError" || !state.identify) return;
+      state.identify.value.textContent = "No value here";
+    });
+}
+
+/** Attach the click/move map handlers once a dataset is rendered (idempotent). */
+function bindIdentify(): void {
+  const map = state.app?.getMap?.();
+  if (!map?.on || state.identifyHandlers) return;
+  const click = (e: unknown) => onIdentifyClick(e);
+  const move = () => {
+    if (state.identify && map.project) positionIdentify(map.project(state.identify.lngLat));
+  };
+  map.on("click", click);
+  map.on("move", move);
+  state.identifyHandlers = { click, move };
+}
+
+function unbindIdentify(): void {
+  const map = state.app?.getMap?.();
+  if (state.identifyHandlers && map?.off) {
+    map.off("click", state.identifyHandlers.click);
+    map.off("move", state.identifyHandlers.move);
+  }
+  state.identifyHandlers = null;
+  removeIdentify();
 }
 
 /** Parse a STAC time-step string ("2026-01-01" or "2026-01-01 00:00") to epoch ms. */
@@ -409,6 +528,7 @@ async function loadDataset(datasetId: string, savedSelector?: Record<string, num
     renderDimControls(spec);
     renderLegend(spec);
     renderStyleControls(spec);
+    bindIdentify();
     setStatus("");
   } catch (err) {
     setStatus(`Failed to load ${datasetId}: ${(err as Error).message}`, true);
@@ -678,6 +798,7 @@ export const plugin: GeoLibrePlugin = {
   },
 
   deactivate(app) {
+    unbindIdentify();
     removeLayer();
     unregisterPanel?.();
     unregisterPanel = undefined;
