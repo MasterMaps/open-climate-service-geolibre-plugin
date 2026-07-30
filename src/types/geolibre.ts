@@ -3,6 +3,21 @@
 // plugin uses need to be present at runtime; the app may not implement every
 // optional method, so all calls are guarded.
 
+import type { QueryGeometry, QueryOptions, QueryResult, Selector } from "@carbonplan/zarr-layer";
+
+// Query surface of GeoLibre's queryZarrLayer (opengeos/GeoLibre#1557), aliased from
+// the renderer's own types so our calls stay in lockstep with the store contract.
+export type GeoLibreZarrQueryGeometry = QueryGeometry;
+export type GeoLibreZarrQuerySelector = Selector;
+export type GeoLibreZarrQueryOptions = QueryOptions;
+export type GeoLibreZarrQueryResult = QueryResult;
+
+/** A maplibre click/mouse event: WGS84 lng/lat plus the pixel point in the map container. */
+export interface GeoLibreMapMouseEvent {
+  lngLat: { lng: number; lat: number };
+  point: { x: number; y: number };
+}
+
 export type GeoLibreMapControlPosition =
   | "top-left"
   | "top-right"
@@ -58,6 +73,14 @@ export interface GeoLibreAppAPI {
   // Native Zarr rendering through GeoLibre's own @carbonplan/zarr-layer (GeoLibre #1447).
   addZarrLayer?: (name: string, url: string, options: GeoLibreZarrLayerOptions) => Promise<string>;
   setZarrLayerSelector?: (layerId: string, selector: Record<string, number | string>) => Promise<boolean>;
+  // Read a native Zarr layer's values under a geometry (click-to-value / region stats),
+  // GeoLibre #1557. Resolves null for an id the Zarr renderer doesn't own.
+  queryZarrLayer?: (
+    layerId: string,
+    geometry: GeoLibreZarrQueryGeometry,
+    selector?: GeoLibreZarrQuerySelector,
+    options?: GeoLibreZarrQueryOptions,
+  ) => Promise<GeoLibreZarrQueryResult | null>;
   // Bind a data-cube layer's time dimension to the native Time Slider (GeoLibre #1448).
   // `{ bind: true }` binds it immediately and opens the slider dock. Returns a detacher.
   registerTemporalLayer?: (
@@ -121,6 +144,8 @@ export interface GeoLibreMapLike {
   fitBounds?: (bounds: [[number, number], [number, number]], options?: unknown) => void;
   on?: (type: string, listener: (event: unknown) => void) => void;
   off?: (type: string, listener: (event: unknown) => void) => void;
+  getContainer?: () => HTMLElement;
+  project?: (lngLat: [number, number]) => { x: number; y: number };
 }
 
 export interface GeoLibreRightPanelRegistration {
