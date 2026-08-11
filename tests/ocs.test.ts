@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildRenderSpec, iterateTemporal, normalizeCrs } from "../src/ocs";
+import { buildRenderSpec, iterateTemporal, normalizeCrs, stepLabel } from "../src/ocs";
 
 describe("normalizeCrs", () => {
   it("collapses CRS84 aliases to EPSG:4326", () => {
@@ -76,5 +76,79 @@ describe("buildRenderSpec", () => {
   it("throws when the collection has no zarr asset", () => {
     const noAsset = { ...collection, assets: {} };
     expect(() => buildRenderSpec(noAsset)).toThrow(/Zarr asset/);
+  });
+});
+
+describe("irregular temporal axis (a dekadal store)", () => {
+  // A cadence with unequal periods cannot be an ISO duration, so STAC gives it `step: null`
+  // and lists explicit values. Shaped exactly as OCS publishes it.
+  const dekadal = (values: string[]) => ({
+    id: "clms_gpp_dekad",
+    assets: { zarr: { href: "http://x/zarr/clms_gpp_dekad", "zarr:zarr_format": 3 } },
+    "cube:dimensions": {
+      t: { type: "temporal", extent: [values[0], values[values.length - 1]], step: null, values },
+      x: { type: "spatial", axis: "x" },
+      y: { type: "spatial", axis: "y" },
+    },
+  });
+  const year2024 = ["01-01", "01-11", "01-21", "02-01", "02-11", "02-21"].map(
+    (md) => `2024-${md}T00:00:00Z`,
+  );
+
+  it("keeps every dekad as a slider step", () => {
+    const spec = buildRenderSpec(dekadal(year2024));
+    const t = spec.dims.find((d) => d.isTemporal);
+    expect(t).toBeTruthy();
+    expect(t!.control).toBe("slider");
+    expect(t!.count).toBe(6);
+    // Regression: with no `values` and a null step there would be no steps at all, so the
+    // control would be filtered out and the axis would be unreachable.
+    expect(t!.steps[1]).toBe("2024-01-11T00:00:00Z");
+  });
+
+  it("names the cadence instead of reporting none", () => {
+    expect(buildRenderSpec(dekadal(year2024)).temporalResolution).toBe("10-daily (dekad)");
+  });
+
+  it("does not mistake other irregular axes for dekads", () => {
+    const odd = ["2024-01-03", "2024-02-07", "2024-03-19"].map((d) => `${d}T00:00:00Z`);
+    expect(buildRenderSpec(dekadal(odd)).temporalResolution).toBe("Irregular");
+  });
+
+  it("still reports the ISO label when there is a real step", () => {
+    const monthly = dekadal(year2024) as Record<string, any>;
+    monthly["cube:dimensions"].t = {
+      type: "temporal",
+      extent: ["2024-01-01", "2024-12-01"],
+      step: "P1M",
+    };
+    expect(buildRenderSpec(monthly).temporalResolution).toBe("Monthly");
+  });
+});
+
+describe("stepLabel", () => {
+  const dim = (steps: Array<string | number>) =>
+    ({ key: "t", label: "Time step", control: "slider", steps, count: steps.length, index: 0, isTemporal: true }) as const;
+
+  it("trims a midnight timestamp to its date, matching the generated path", () => {
+    // `iterateTemporal` already yields "2024-12-21"; explicit `values` arrive full-length.
+    const d = dim(["2024-12-21T00:00:00Z", "2024-12-21T00:00Z", "2024-12-21T00:00:00.000Z"]);
+    expect(stepLabel(d, 0)).toBe("2024-12-21");
+    expect(stepLabel(d, 1)).toBe("2024-12-21");
+    expect(stepLabel(d, 2)).toBe("2024-12-21");
+  });
+
+  it("keeps the time of day when there is one", () => {
+    expect(stepLabel(dim(["2024-12-21T06:00:00Z"]), 0)).toBe("2024-12-21 06:00");
+  });
+
+  it("passes ordinal and category steps through untouched", () => {
+    expect(stepLabel(dim([1, 32, 60]), 1)).toBe("32");
+    expect(stepLabel(dim(["female", "male"]), 0)).toBe("female");
+    expect(stepLabel(dim(["2024-12-21"]), 0)).toBe("2024-12-21");
+  });
+
+  it("falls back to the index when a step is missing", () => {
+    expect(stepLabel(dim([]), 3)).toBe("3");
   });
 });

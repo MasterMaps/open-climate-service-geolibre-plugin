@@ -7,6 +7,7 @@ import {
   fetchCollection,
   fetchInstanceExtent,
   type DimState,
+  stepLabel,
   type InstanceExtent,
   type OcsCollectionSummary,
   type RenderSpec,
@@ -471,11 +472,6 @@ function renderMeta(spec: RenderSpec): void {
   if (spec.temporalResolution) panel.meta.appendChild(row("Period type", spec.temporalResolution));
   panel.meta.appendChild(row("CRS", spec.crs));
   if (spec.source) panel.meta.appendChild(row("Source", spec.source));
-}
-
-function stepLabel(dim: DimState, i: number): string {
-  const v = dim.steps[i];
-  return v == null ? String(i) : String(v);
 }
 
 function renderDimControls(spec: RenderSpec): void {
